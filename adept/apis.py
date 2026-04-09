@@ -58,6 +58,11 @@ class TeacherAPI:
 class StudentAPI:
     """Student API：提供 baseline 与 intervention 两种作答能力。"""
 
+    _subquestion_pattern = re.compile(
+        r"(?:^|\n)\s*(?:第\s*\d+\s*[题问]|[（(]?\d+[）)\.、]|[一二三四五六七八九十]+[、\.])"
+    )
+    _choice_pattern = re.compile(r"选择题|单选|多选|(?:^|[\s\n])[A-Da-d][\.、\)]")
+
     def __init__(
         self,
         client: LLMClient,
@@ -75,6 +80,12 @@ class StudentAPI:
             design_question=design_question,
         )
         answer = await self.client.generate(prompt, system_prompt=self.system_prompt)
+        answer = await self._maybe_rewrite_for_coverage(
+            source_material=source_material,
+            design_question=design_question,
+            current_answer=answer,
+            teacher_output=None,
+        )
         return APICallResult(prompt=prompt, answer=answer)
 
     async def answer_intervention(
@@ -90,7 +101,84 @@ class StudentAPI:
             design_question=design_question,
         )
         answer = await self.client.generate(prompt, system_prompt=self.system_prompt)
+        answer = await self._maybe_rewrite_for_coverage(
+            source_material=source_material,
+            design_question=design_question,
+            current_answer=answer,
+            teacher_output=teacher_output,
+        )
         return APICallResult(prompt=prompt, answer=answer)
+
+    @classmethod
+    def _needs_coverage_pass(cls, design_question: str) -> bool:
+        text = design_question.strip()
+        if not text:
+            return False
+
+        numbered_count = len(cls._subquestion_pattern.findall(text))
+        question_mark_count = text.count("?") + text.count("？")
+        has_choice = bool(cls._choice_pattern.search(text))
+        return numbered_count >= 2 or question_mark_count >= 2 or has_choice
+
+    @staticmethod
+    def _build_coverage_rewrite_prompt(
+        *,
+        source_material: str,
+        design_question: str,
+        current_answer: str,
+        teacher_output: str | None,
+    ) -> str:
+        sections = [
+            "你需要修订当前答案，确保完整覆盖设计问题的全部子问题与题型（含选择题）。",
+            "",
+            "【设计素材】",
+            source_material,
+            "",
+            "【设计问题】",
+            design_question,
+        ]
+
+        if teacher_output is not None:
+            sections.extend(["", "【导师辅导内容】", teacher_output])
+
+        sections.extend(
+            [
+                "",
+                "【当前答案】",
+                current_answer,
+                "",
+                "修订要求：",
+                "1) 若当前答案已完整覆盖所有子问题与题型，原样返回；",
+                "2) 若存在漏答，补全后返回完整最终答案；",
+                "3) 结构按“问题1/问题2/...”分段；",
+                "4) 对选择题需明确给出选项字母与理由；",
+                "5) 只返回最终答案，不要解释你的检查过程。",
+            ]
+        )
+
+        return "\n".join(sections)
+
+    async def _maybe_rewrite_for_coverage(
+        self,
+        *,
+        source_material: str,
+        design_question: str,
+        current_answer: str,
+        teacher_output: str | None,
+    ) -> str:
+        if not self._needs_coverage_pass(design_question):
+            return current_answer
+
+        rewrite_prompt = self._build_coverage_rewrite_prompt(
+            source_material=source_material,
+            design_question=design_question,
+            current_answer=current_answer,
+            teacher_output=teacher_output,
+        )
+
+        revised_answer = await self.client.generate(rewrite_prompt, system_prompt=self.system_prompt)
+        revised_answer = revised_answer.strip()
+        return revised_answer or current_answer
 
 
 class RubricScoringAPI:
@@ -199,7 +287,12 @@ class RubricScoringAPI:
         raise ValueError("Rubric 评分 API 返回内容无法解析为 JSON 对象")
 
     @staticmethod
-    def _parse_mapping_candidate(candidate: str) -> dict[str, Any] | None:
+    def _looks_like_placeholder_reason(reason: str) -> bool:
+        normalized = reason.strip().strip('"\'`').replace(" ", "")
+        return normalized in {"", "...", "…", "待补充", "请填写理由", "理由"}
+
+    @classmethod
+    def _parse_mapping_candidate(cls, candidate: str) -> dict[str, Any] | None:
         """优先按 JSON 解析，失败后尝试解析 Python 字面量字典。"""
 
         try:
@@ -210,29 +303,74 @@ class RubricScoringAPI:
             except (ValueError, SyntaxError):
                 return None
 
-        if isinstance(data, Mapping):
-            return dict(data)
-        return None
+        if not isinstance(data, Mapping):
+            return None
+
+        mapping = {str(k): v for k, v in data.items()}
+
+        score_value: Any | None = None
+        for key in ("score", "分数", "得分"):
+            if key in mapping:
+                score_value = mapping[key]
+                break
+
+        if score_value is None:
+            return None
+
+        reason_value: Any = ""
+        for key in ("reason", "理由", "评语", "analysis", "comment"):
+            if key in mapping:
+                reason_value = mapping[key]
+                break
+
+        score_text = str(score_value).strip()
+        reason_text = str(reason_value).strip()
+
+        if not score_text:
+            return None
+        if score_text.startswith("<") and score_text.endswith(">"):
+            return None
+
+        # 避免把提示词模板中的占位 JSON 误判为评分结果。
+        if cls._looks_like_placeholder_reason(reason_text) and score_text in {"0", "0.0"}:
+            return None
+
+        return {
+            "score": score_value,
+            "reason": reason_text,
+        }
+
+    @staticmethod
+    def _is_template_context(raw_text: str, start_idx: int, end_idx: int) -> bool:
+        left = raw_text[max(0, start_idx - 24) : start_idx]
+        right = raw_text[end_idx : min(len(raw_text), end_idx + 24)]
+        compact_context = (left + right).lower().replace(" ", "")
+        if "json格式" in compact_context:
+            return True
+        return False
 
     @staticmethod
     def _extract_score_reason_fallback(raw_text: str) -> dict[str, Any] | None:
         """当返回非标准 JSON 时，启发式提取 score/reason。"""
 
         score_patterns = [
-            r'"score"\s*[:：]\s*(-?\d+)',
-            r"\bscore\b\s*[:：]\s*(-?\d+)",
-            r"分数\s*[:：]\s*(-?\d+)",
-            r"得分\s*[:：]\s*(-?\d+)",
+            r'"score"\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)',
+            r"\bscore\b\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)",
+            r"分数\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)",
+            r"得分\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)",
         ]
-        score: int | None = None
+        score_candidates: list[tuple[int, int]] = []
         for pattern in score_patterns:
-            matched = re.search(pattern, raw_text, re.IGNORECASE)
-            if matched:
-                score = int(matched.group(1))
-                break
+            for matched in re.finditer(pattern, raw_text, re.IGNORECASE):
+                if RubricScoringAPI._is_template_context(raw_text, matched.start(), matched.end()):
+                    continue
+                score_candidates.append((matched.start(), int(matched.group(1))))
 
-        if score is None:
+        if not score_candidates:
             return None
+
+        score_candidates.sort(key=lambda item: item[0])
+        score = score_candidates[-1][1]
 
         reason_patterns = [
             r'"reason"\s*[:：]\s*"([^"]+)"',
@@ -260,6 +398,9 @@ class RubricScoringAPI:
 
         if not reason:
             reason = "模型返回了非标准 JSON，已启发式解析。"
+
+        if RubricScoringAPI._looks_like_placeholder_reason(reason):
+            return None
 
         return {"score": score, "reason": reason}
 
@@ -325,7 +466,7 @@ class RubricScoringAPI:
             f"1) score 必须是 {self.min_score}-{self.max_score} 的整数\n"
             "2) reason 必须为简洁中文说明\n"
             "3) 只返回 JSON，不要附加任何其他文字\n"
-            f'JSON 格式: {{"score": {self.min_score}, "reason": "..."}}'
+            "4) JSON 仅包含两个键：score（整数）和 reason（字符串）"
         )
 
 

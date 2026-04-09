@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import time
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any
 
 import streamlit as st  # pyright: ignore[reportMissingImports]
@@ -253,6 +255,26 @@ def apply_custom_style() -> None:
             padding: 1.2rem;
             line-height: 1.5;
             font-size: 0.95rem;
+        }
+
+        .adept-scroll-panel {
+            border: 1px solid var(--apple-border);
+            border-radius: var(--apple-radius-base);
+            background: #ffffff;
+            padding: 0.7rem 0.8rem;
+            height: 280px;
+            overflow-y: auto;
+            overflow-x: auto;
+        }
+
+        .adept-scroll-panel pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: var(--apple-text);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.55;
+            font-size: 0.93rem;
         }
 
         .adept-caption {
@@ -582,10 +604,55 @@ def build_model_config_from_ui(
     )
 
 
+def analyze_role_config_overlap(
+    role_configs: dict[str, ModelConfig],
+) -> tuple[list[str], list[str]]:
+    """分析角色配置是否复用 API Key，或路由到同一模型端点。"""
+
+    same_key_pairs: list[str] = []
+    same_endpoint_pairs: list[str] = []
+
+    items = list(role_configs.items())
+    for (left_name, left_cfg), (right_name, right_cfg) in combinations(items, 2):
+        if left_cfg.api_key.strip() and left_cfg.api_key.strip() == right_cfg.api_key.strip():
+            same_key_pairs.append(f"{left_name}/{right_name}")
+
+        if (
+            left_cfg.provider == right_cfg.provider
+            and left_cfg.model.strip() == right_cfg.model.strip()
+            and left_cfg.base_url.rstrip("/") == right_cfg.base_url.rstrip("/")
+        ):
+            same_endpoint_pairs.append(f"{left_name}/{right_name}")
+
+    return same_key_pairs, same_endpoint_pairs
+
+
 def run_coroutine(loop: asyncio.AbstractEventLoop, coro: Any) -> Any:
     """在固定事件循环中执行协程，避免跨 loop 使用 aiohttp session。"""
 
     return loop.run_until_complete(coro)
+
+
+def render_scrollable_text(container: Any, text: str) -> None:
+    """在固定高度可滚动容器中渲染文本输出。"""
+
+    safe_text = html.escape(text)
+    container.markdown(
+        f'<div class="adept-scroll-panel"><pre>{safe_text}</pre></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_sample_markdown(sample: QuestionSample) -> str:
+    """统一格式化当前样本展示内容。"""
+
+    return "\n".join(
+        [
+            "### 当前样本",
+            f"**Source Material**\n\n{sample.source_material}",
+            f"**Design Question**\n\n{sample.design_question}",
+        ]
+    )
 
 
 def render_sidebar() -> tuple[UIConfig, Any, Any]:
@@ -644,12 +711,31 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
 
         st.divider()
 
-        judge_model_id = st.text_input(
-            label="Judge Model ID（可选）",
-            value="",
-            placeholder="可留空，按平台自动选择默认模型（如 DeepSeek: deepseek-chat）",
-            help="留空时会根据 Judge Base URL 或模型平台自动推断默认模型。",
-        ).strip()
+        judge_model_options = [
+            "deepseek-reasoner",
+            "deepseek-chat",
+            "qwen-max",
+            "qwen-plus",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "moonshot-v1-32k",
+            "moonshot-v1-8k",
+            "自定义（手动输入）",
+        ]
+        judge_model_choice = st.selectbox(
+            label="Judge Model",
+            options=judge_model_options,
+            index=0,
+            help="建议从预置模型中选择，避免空值被错误回退到 OpenAI。",
+        )
+        if judge_model_choice == "自定义（手动输入）":
+            judge_model_id = st.text_input(
+                label="Judge Model ID（自定义）",
+                value="",
+                placeholder="手动输入 Judge 模型 ID",
+            ).strip()
+        else:
+            judge_model_id = judge_model_choice
         judge_api_key = st.text_input(
             label="Judge API Key",
             type="password",
@@ -675,7 +761,7 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
                 label="Max Tokens",
                 min_value=128,
                 max_value=8192,
-                value=1024,
+                value=2048,
                 step=128,
             )
             timeout_seconds = st.number_input(
@@ -699,7 +785,7 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
             type=["txt", "md", "json"],
         )
 
-        st.caption("提示：真实模式下需分别配置 Teacher/Student/Judge 的 API；Judge Model ID 可留空。")
+        st.caption("提示：真实模式下需分别配置 Teacher/Student/Judge 的 API。")
 
     ui_config = UIConfig(
         run_mode=run_mode,
@@ -731,6 +817,8 @@ def main() -> None:
     # 使用 session_state 保存最近一次运行记录，避免页面交互导致结果消失。
     if "last_records" not in st.session_state:
         st.session_state["last_records"] = []
+    if "last_render_snapshot" not in st.session_state:
+        st.session_state["last_render_snapshot"] = None
 
     # ===== Sidebar: 配置区 =====
     ui_config, question_file, rubric_file = render_sidebar()
@@ -806,15 +894,33 @@ def main() -> None:
             metric_delta_placeholder = metric_col3.empty()
             judge_reason_placeholder = st.empty()
 
-    block_a_placeholder.markdown("等待开始评测后展示当前题目内容。")
-    base_placeholder.markdown("等待生成学生基线回答。")
-    teacher_placeholder.markdown("等待生成教师教学指导。")
-    final_placeholder.markdown("等待生成学生最终回答。")
-    judge_reason_placeholder.markdown("Rubric 评分说明将在评测后显示。")
+    last_snapshot = st.session_state.get("last_render_snapshot")
+    if isinstance(last_snapshot, dict):
+        block_a_placeholder.markdown(str(last_snapshot.get("sample_markdown", "等待开始评测后展示当前题目内容。")))
+        render_scrollable_text(base_placeholder, str(last_snapshot.get("base_answer", "等待生成学生基线回答。")))
+        render_scrollable_text(teacher_placeholder, str(last_snapshot.get("teacher_knowledge", "等待生成教师教学指导。")))
+        render_scrollable_text(final_placeholder, str(last_snapshot.get("improved_answer", "等待生成学生最终回答。")))
+
+        judge_result_snapshot = last_snapshot.get("judge_result")
+        if isinstance(judge_result_snapshot, dict):
+            metric_base_placeholder.metric("S_base", int(judge_result_snapshot.get("s_base", 0)))
+            metric_knowledge_placeholder.metric("S_knowledge", int(judge_result_snapshot.get("s_knowledge", 0)))
+            metric_delta_placeholder.metric("Delta Score", int(judge_result_snapshot.get("delta", 0)))
+            judge_reason_placeholder.markdown(
+                f"**Rubric 评分说明**\n\n{judge_result_snapshot.get('reason', '评分接口未提供理由')}"
+            )
+        else:
+            judge_reason_placeholder.markdown("Rubric 评分说明将在评测后显示。")
+    else:
+        block_a_placeholder.markdown("等待开始评测后展示当前题目内容。")
+        render_scrollable_text(base_placeholder, "等待生成学生基线回答。")
+        render_scrollable_text(teacher_placeholder, "等待生成教师教学指导。")
+        render_scrollable_text(final_placeholder, "等待生成学生最终回答。")
+        judge_reason_placeholder.markdown("Rubric 评分说明将在评测后显示。")
 
     # 若用户点击运行，则执行 mock 评测。
     if run_clicked:
-        # 仅在真实模式要求必须提供 API Key 与 Teacher/Student Model ID。
+        # 仅在真实模式要求必须提供 API Key 与三角色 Model ID。
         if ui_config.run_mode.startswith("Real"):
             missing_fields: list[str] = []
             if not ui_config.teacher_model_id.strip():
@@ -825,6 +931,8 @@ def main() -> None:
                 missing_fields.append("Student Model ID")
             if not ui_config.student_api_key.strip():
                 missing_fields.append("Student API Key")
+            if not ui_config.judge_model_id.strip():
+                missing_fields.append("Judge Model ID")
             if not ui_config.judge_api_key.strip():
                 missing_fields.append("Judge API Key")
 
@@ -867,8 +975,27 @@ def main() -> None:
                         temperature=0.0,
                         max_tokens=ui_config.max_tokens,
                         timeout_seconds=ui_config.timeout_seconds,
-                        allow_empty_model_id=True,
                     )
+
+                    role_configs = {
+                        "Teacher": teacher_cfg,
+                        "Student": student_cfg,
+                        "Judge": judge_cfg,
+                    }
+                    same_key_pairs, same_endpoint_pairs = analyze_role_config_overlap(role_configs)
+                    if same_key_pairs:
+                        st.info(
+                            "检测到复用同一 API Key 的角色："
+                            + "、".join(same_key_pairs)
+                            + "。这不会被系统自动判定为同一模型输出；"
+                            "是否同模型取决于 Provider / Model ID / Base URL。"
+                        )
+                    if same_endpoint_pairs:
+                        st.warning(
+                            "检测到以下角色指向同一模型端点："
+                            + "、".join(same_endpoint_pairs)
+                            + "。这会导致输出风格高度接近，建议至少区分模型或平台地址。"
+                        )
 
                     app_config = AppConfig(
                         teacher=teacher_cfg,
@@ -885,15 +1012,8 @@ def main() -> None:
                     status_placeholder.info(f"正在处理第 {idx}/{len(samples)} 题")
 
                     # Step 1: 展示当前题目（区块 A）
-                    block_a_placeholder.markdown(
-                        "\n".join(
-                            [
-                                "### 当前样本",
-                                f"**Source Material**\n\n{sample.source_material}",
-                                f"**Design Question**\n\n{sample.design_question}",
-                            ]
-                        )
-                    )
+                    sample_markdown = render_sample_markdown(sample)
+                    block_a_placeholder.markdown(sample_markdown)
                     current_step += 1
                     progress_bar.progress(int(current_step / total_steps * 100), text="加载当前题目")
 
@@ -910,7 +1030,7 @@ def main() -> None:
                             ),
                         )
                         base_answer = str(baseline_result.answer)
-                        base_placeholder.markdown(base_answer)
+                        render_scrollable_text(base_placeholder, base_answer)
                         current_step += 1
                         progress_bar.progress(int(current_step / total_steps * 100), text="Real API：生成基线回答")
 
@@ -923,7 +1043,7 @@ def main() -> None:
                             ),
                         )
                         teacher_knowledge = str(teacher_result.answer)
-                        teacher_placeholder.markdown(teacher_knowledge)
+                        render_scrollable_text(teacher_placeholder, teacher_knowledge)
                         current_step += 1
                         progress_bar.progress(int(current_step / total_steps * 100), text="Real API：生成教学指导")
 
@@ -937,7 +1057,7 @@ def main() -> None:
                             ),
                         )
                         improved_answer = str(final_result.answer)
-                        final_placeholder.markdown(improved_answer)
+                        render_scrollable_text(final_placeholder, improved_answer)
                         current_step += 1
                         progress_bar.progress(int(current_step / total_steps * 100), text="Real API：生成最终回答")
 
@@ -996,9 +1116,9 @@ def main() -> None:
                         current_step += 1
                         progress_bar.progress(int(current_step / total_steps * 100), text="完成裁判评分")
 
-                        base_placeholder.markdown(base_answer)
-                        teacher_placeholder.markdown(teacher_knowledge)
-                        final_placeholder.markdown(improved_answer)
+                        render_scrollable_text(base_placeholder, base_answer)
+                        render_scrollable_text(teacher_placeholder, teacher_knowledge)
+                        render_scrollable_text(final_placeholder, improved_answer)
 
                     # 区块 C: 评分展示
                     metric_base_placeholder.metric("S_base", judge_result["s_base"])
@@ -1007,6 +1127,14 @@ def main() -> None:
                     judge_reason_placeholder.markdown(
                         f"**Rubric 评分说明**\n\n{judge_result['reason']}"
                     )
+
+                    st.session_state["last_render_snapshot"] = {
+                        "sample_markdown": sample_markdown,
+                        "base_answer": base_answer,
+                        "teacher_knowledge": teacher_knowledge,
+                        "improved_answer": improved_answer,
+                        "judge_result": judge_result,
+                    }
 
                     records.append(
                         {
@@ -1027,7 +1155,10 @@ def main() -> None:
 
         progress_bar.progress(100, text="评测完成")
         status_placeholder.success("评测流程执行完毕。")
-        st.session_state["last_records"] = records
+        if records:
+            st.session_state["last_records"] = records
+        else:
+            status_placeholder.warning("本次运行未生成有效记录，已保留上次评测结果。")
 
     # 无论是否刚刚运行，只要 session_state 中有结果，就显示汇总区。
     if st.session_state["last_records"]:
@@ -1045,7 +1176,10 @@ def main() -> None:
         sum_col2.metric("平均 Delta", f"{avg_delta:.2f}")
         sum_col3.metric("提升占比", f"{positive_ratio:.0%}")
 
-        st.dataframe(results, width="stretch", hide_index=True)
+        try:
+            st.dataframe(results, width="stretch", hide_index=True)
+        except Exception:
+            st.dataframe(results, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":

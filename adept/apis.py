@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -131,7 +132,17 @@ class RubricScoringAPI:
         )
 
         raw_text = await self.client.generate(prompt, system_prompt=self.system_prompt)
-        parsed_json = self._extract_json_object(raw_text)
+        try:
+            parsed_json = self._extract_json_object(raw_text)
+        except ValueError:
+            # 首轮返回不合规时再补一次强约束请求，降低失败率。
+            repair_prompt = (
+                prompt
+                + "\n\n请严格按要求只返回 JSON 对象，不要包含解释、代码块或其他文本。"
+            )
+            raw_text = await self.client.generate(repair_prompt, system_prompt=self.system_prompt)
+            parsed_json = self._extract_json_object(raw_text)
+
         score = self._parse_score(parsed_json.get("score"))
 
         reason_raw = parsed_json.get("reason")
@@ -177,15 +188,80 @@ class RubricScoringAPI:
         unique_candidates = [item for item in candidates if not (item in seen or seen.add(item))]
 
         for candidate in unique_candidates:
-            try:
-                data = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
+            parsed_mapping = cls._parse_mapping_candidate(candidate)
+            if parsed_mapping is not None:
+                return parsed_mapping
 
-            if isinstance(data, Mapping):
-                return dict(data)
+        fallback = cls._extract_score_reason_fallback(raw_text)
+        if fallback is not None:
+            return fallback
 
         raise ValueError("Rubric 评分 API 返回内容无法解析为 JSON 对象")
+
+    @staticmethod
+    def _parse_mapping_candidate(candidate: str) -> dict[str, Any] | None:
+        """优先按 JSON 解析，失败后尝试解析 Python 字面量字典。"""
+
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                data = ast.literal_eval(candidate)
+            except (ValueError, SyntaxError):
+                return None
+
+        if isinstance(data, Mapping):
+            return dict(data)
+        return None
+
+    @staticmethod
+    def _extract_score_reason_fallback(raw_text: str) -> dict[str, Any] | None:
+        """当返回非标准 JSON 时，启发式提取 score/reason。"""
+
+        score_patterns = [
+            r'"score"\s*[:：]\s*(-?\d+)',
+            r"\bscore\b\s*[:：]\s*(-?\d+)",
+            r"分数\s*[:：]\s*(-?\d+)",
+            r"得分\s*[:：]\s*(-?\d+)",
+        ]
+        score: int | None = None
+        for pattern in score_patterns:
+            matched = re.search(pattern, raw_text, re.IGNORECASE)
+            if matched:
+                score = int(matched.group(1))
+                break
+
+        if score is None:
+            return None
+
+        reason_patterns = [
+            r'"reason"\s*[:：]\s*"([^"]+)"',
+            r'"reason"\s*[:：]\s*\'([^\']+)\'',
+            r"\breason\b\s*[:：]\s*([^\n\r]+)",
+            r"理由\s*[:：]\s*([^\n\r]+)",
+            r"评语\s*[:：]\s*([^\n\r]+)",
+        ]
+        reason = ""
+        for pattern in reason_patterns:
+            matched = re.search(pattern, raw_text, re.IGNORECASE)
+            if matched:
+                reason = matched.group(1).strip().strip('"\'`')
+                break
+
+        if not reason:
+            lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+            filtered = [
+                line
+                for line in lines
+                if not re.search(r"score|分数|得分|```|\{|\}", line, re.IGNORECASE)
+            ]
+            if filtered:
+                reason = filtered[0][:200]
+
+        if not reason:
+            reason = "模型返回了非标准 JSON，已启发式解析。"
+
+        return {"score": score, "reason": reason}
 
     @staticmethod
     def _find_balanced_object(text: str) -> str | None:

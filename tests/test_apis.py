@@ -79,8 +79,10 @@ def test_student_api_supports_baseline_and_intervention() -> None:
         )
 
         assert "仅根据提供的设计素材" in baseline.prompt
+        assert "逐条完整回答" in baseline.prompt
         assert baseline.answer == "baseline 答案"
         assert "先学习导师辅导" in intervention.prompt
+        assert "逐条完整回答" in intervention.prompt
         assert intervention.answer == "intervention 答案"
 
     asyncio.run(_run())
@@ -123,6 +125,63 @@ def test_rubric_scoring_api_parses_fenced_json() -> None:
 
         assert result["score"] == 90
         assert result["reason"] == "策略明确且表达清晰"
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_parses_python_literal_dict() -> None:
+    async def _run() -> None:
+        client = QueueLLMClient(["{'score': 81, 'reason': '结构可执行，步骤清楚'}"])
+        api = RubricScoringAPI(client)
+
+        result = await api.evaluate(
+            source_material="校园导视系统改造",
+            design_question="如何降低用户迷路率？",
+            student_answer="按高频路径重构导视层级并补充转角提示",
+        )
+
+        assert result["score"] == 81
+        assert "结构可执行" in result["reason"]
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_parses_non_json_text_fallback() -> None:
+    async def _run() -> None:
+        client = QueueLLMClient([
+            "评分结果如下：\nscore: 77\nreason: 方案与约束对应较好，但评估指标还可补充。"
+        ])
+        api = RubricScoringAPI(client)
+
+        result = await api.evaluate(
+            source_material="图书馆空间更新",
+            design_question="如何平衡安静阅读与小组协作？",
+            student_answer="通过分区和动线控制减少相互干扰",
+        )
+
+        assert result["score"] == 77
+        assert "约束对应" in result["reason"]
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_retries_when_first_response_invalid() -> None:
+    async def _run() -> None:
+        client = QueueLLMClient([
+            "我认为答案整体不错。",
+            '{"score": 74, "reason": "第二次输出合法 JSON"}',
+        ])
+        api = RubricScoringAPI(client)
+
+        result = await api.evaluate(
+            source_material="公共服务触点优化",
+            design_question="如何提升触点一致性？",
+            student_answer="统一命名体系并梳理关键任务流",
+        )
+
+        assert result["score"] == 74
+        assert "第二次" in result["reason"]
+        assert len(client.calls) == 2
 
     asyncio.run(_run())
 

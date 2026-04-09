@@ -23,9 +23,10 @@ class _DummyResponse:
 
 
 class _DummySession:
-    def __init__(self) -> None:
+    def __init__(self, *, payload: dict[str, Any] | None = None) -> None:
         self.closed = False
         self.last_payload: dict[str, Any] | None = None
+        self.payload = payload or {"choices": [{"message": {"content": "ok"}}]}
 
     def post(
         self,
@@ -38,7 +39,7 @@ class _DummySession:
         self.last_payload = dict(json or {})
         return _DummyResponse(
             status=200,
-            payload={"choices": [{"message": {"content": "ok"}}]},
+            payload=self.payload,
         )
 
     async def close(self) -> None:
@@ -132,5 +133,43 @@ def test_deepseek_uses_default_model_when_model_is_empty() -> None:
         assert session.last_payload is not None
         assert session.last_payload["model"] == "deepseek-chat"
         assert session.last_payload["stream"] is False
+
+    asyncio.run(_run())
+
+
+def test_deepseek_extracts_reasoning_content_when_content_missing() -> None:
+    async def _run() -> None:
+        session = _DummySession(
+            payload={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "reasoning_content": '{"score": 80, "reason": "结构清晰"}',
+                        }
+                    }
+                ]
+            }
+        )
+        config = _deepseek_config(model_name="deepseek-reasoner")
+        client = DeepSeekClient(config=config, session=session)
+
+        answer = await client.generate("请输出一句测试文本")
+
+        assert "score" in answer
+
+    asyncio.run(_run())
+
+
+def test_deepseek_extracts_text_from_choice_text_fallback() -> None:
+    async def _run() -> None:
+        session = _DummySession(payload={"choices": [{"text": "fallback text"}]})
+        config = _deepseek_config()
+        client = DeepSeekClient(config=config, session=session)
+
+        answer = await client.generate("请输出一句测试文本")
+
+        assert answer == "fallback text"
 
     asyncio.run(_run())

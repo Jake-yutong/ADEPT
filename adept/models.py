@@ -408,39 +408,81 @@ class OpenAICompatibleClient(LLMClient):
 
         content = self._extract_content(data)
         if not content:
-            raise LLMAPIError(f"[{self.config.provider}] 响应缺少可解析文本")
+            raise LLMAPIError(
+                f"[{self.config.provider}] 响应缺少可解析文本（model={self.config.model}），"
+                f"响应片段={raw_text[:500]}"
+            )
         return content
 
     @staticmethod
-    def _extract_content(data: Mapping[str, Any]) -> str:
+    def _coerce_text_from_mapping(mapping: Mapping[str, Any]) -> str:
+        """从对象结构中提取可用文本字段。"""
+
+        for key in ("text", "content", "output_text", "reasoning_content", "value", "refusal"):
+            value = mapping.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @classmethod
+    def _coerce_text_from_parts(cls, parts: Any) -> str:
+        """从多段内容列表中拼接可用文本。"""
+
+        if isinstance(parts, str):
+            return parts.strip()
+        if not isinstance(parts, list):
+            return ""
+
+        text_parts: list[str] = []
+        for part in parts:
+            if isinstance(part, Mapping):
+                part_text = cls._coerce_text_from_mapping(part)
+                if part_text:
+                    text_parts.append(part_text)
+            elif isinstance(part, str):
+                stripped = part.strip()
+                if stripped:
+                    text_parts.append(stripped)
+        return "\n".join(text_parts).strip()
+
+    @classmethod
+    def _extract_content(cls, data: Mapping[str, Any]) -> str:
         """兼容不同供应商在 content 字段上的细微差异。"""
 
         choices = data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return ""
+        if isinstance(choices, list) and choices:
+            first_choice = choices[0]
+            if isinstance(first_choice, Mapping):
+                message = first_choice.get("message")
+                if isinstance(message, Mapping):
+                    message_content = message.get("content")
+                    parsed_from_content = cls._coerce_text_from_parts(message_content)
+                    if parsed_from_content:
+                        return parsed_from_content
 
-        first_choice = choices[0]
-        if not isinstance(first_choice, Mapping):
-            return ""
+                    parsed_from_message = cls._coerce_text_from_mapping(message)
+                    if parsed_from_message:
+                        return parsed_from_message
 
-        message = first_choice.get("message")
-        if not isinstance(message, Mapping):
-            return ""
+                parsed_from_choice = cls._coerce_text_from_mapping(first_choice)
+                if parsed_from_choice:
+                    return parsed_from_choice
 
-        content = message.get("content")
-        if isinstance(content, str):
-            return content.strip()
+        parsed_from_output_text = cls._coerce_text_from_parts(data.get("output_text"))
+        if parsed_from_output_text:
+            return parsed_from_output_text
 
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for part in content:
-                if isinstance(part, Mapping):
-                    part_text = part.get("text")
-                    if isinstance(part_text, str):
-                        text_parts.append(part_text)
-                elif isinstance(part, str):
-                    text_parts.append(part)
-            return "".join(text_parts).strip()
+        output_blocks = data.get("output")
+        if isinstance(output_blocks, list):
+            for block in output_blocks:
+                if not isinstance(block, Mapping):
+                    continue
+                block_text = cls._coerce_text_from_parts(block.get("content"))
+                if block_text:
+                    return block_text
+                block_text = cls._coerce_text_from_mapping(block)
+                if block_text:
+                    return block_text
 
         return ""
 

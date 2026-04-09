@@ -58,174 +58,215 @@ class UIConfig:
 # 样式函数（学术风格 UI）
 # -----------------------------
 def apply_custom_style() -> None:
-    """注入自定义 CSS，让页面更现代且有学术感。"""
+    """注入自定义 CSS，让页面更现代且有学术感（Apple 风格）。"""
 
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&display=swap');
-
         :root {
-            --adept-bg: #eef3f8;
-            --adept-card: #ffffff;
-            --adept-border: #c8d5e3;
-            --adept-text: #13263b;
-            --adept-muted: #4d6279;
-            --adept-primary: #114b8a;
-            --adept-accent: #0f766e;
-            --adept-shadow: 0 10px 28px rgba(19, 38, 59, 0.08);
+            --apple-bg: #fbfbfd;
+            --apple-card: #ffffff;
+            --apple-border: #d2d2d7;
+            --apple-text: #1d1d1f;
+            --apple-muted: #86868b;
+            --apple-blue: #0071e3;
+            --apple-blue-hover: #0077ed;
+            --apple-radius-large: 18px;
+            --apple-radius-base: 12px;
+            --apple-shadow: 0 4px 6px rgba(0, 0, 0, 0.02), 0 10px 15px rgba(0, 0, 0, 0.03);
+            --apple-shadow-hover: 0 8px 12px rgba(0, 0, 0, 0.04), 0 16px 24px rgba(0, 0, 0, 0.06);
         }
 
         .stApp {
-            font-family: 'IBM Plex Sans', sans-serif;
-            color: var(--adept-text);
-            background:
-                radial-gradient(circle at 7% 10%, rgba(17, 75, 138, 0.15), rgba(17, 75, 138, 0) 25%),
-                radial-gradient(circle at 92% 12%, rgba(15, 118, 110, 0.11), rgba(15, 118, 110, 0) 23%),
-                var(--adept-bg);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: var(--apple-text);
+            background: var(--apple-bg);
+            -webkit-font-smoothing: antialiased;
         }
 
         section.main > div.block-container {
             max-width: 1280px;
-            padding-top: 1.2rem;
-            padding-bottom: 2.6rem;
+            padding-top: 2rem;
+            padding-bottom: 4rem;
         }
 
-        h1, h2, h3 {
-            font-family: 'Noto Serif SC', serif;
-            letter-spacing: 0.5px;
-            color: var(--adept-text);
+        h1, h2, h3, h4, h5, h6 {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+            color: var(--apple-text);
+            font-weight: 600;
+            letter-spacing: -0.015em;
         }
 
         [data-testid="stSidebar"] {
-            border-right: 1px solid var(--adept-border);
-            background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+            border-right: 1px solid var(--apple-border);
+            background: #f5f5f7;
         }
 
         [data-testid="stSidebar"] * {
-            color: var(--adept-text);
+            color: var(--apple-text);
         }
 
         [data-testid="stWidgetLabel"] {
-            color: var(--adept-text) !important;
-            font-weight: 600;
+            color: var(--apple-text) !important;
+            font-weight: 500;
+            font-size: 0.95rem;
             margin-bottom: 0.2rem;
         }
 
         div[data-baseweb="input"] > div,
         div[data-baseweb="select"] > div,
         div[data-baseweb="textarea"] > div {
-            background: #ffffff !important;
-            color: var(--adept-text) !important;
-            border: 1px solid var(--adept-border) !important;
-            border-radius: 10px !important;
+            background: rgba(255, 255, 255, 0.8) !important;
+            color: var(--apple-text) !important;
+            border: 1px solid var(--apple-border) !important;
+            border-radius: var(--apple-radius-base) !important;
             box-shadow: none !important;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        div[data-baseweb="input"] > div:focus-within,
+        div[data-baseweb="select"] > div:focus-within,
+        div[data-baseweb="textarea"] > div:focus-within {
+            border-color: var(--apple-blue) !important;
+            box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.2) !important;
         }
 
         div[data-baseweb="select"] span,
         div[data-baseweb="input"] input,
         div[data-baseweb="textarea"] textarea {
-            color: var(--adept-text) !important;
-            -webkit-text-fill-color: var(--adept-text) !important;
+            color: var(--apple-text) !important;
+            -webkit-text-fill-color: var(--apple-text) !important;
         }
 
         [data-testid="stTextArea"] textarea:disabled {
-            color: #23384f !important;
-            -webkit-text-fill-color: #23384f !important;
-            background: #f7fbff !important;
+            color: var(--apple-muted) !important;
+            -webkit-text-fill-color: var(--apple-muted) !important;
+            background: #f5f5f7 !important;
             opacity: 1 !important;
         }
 
         [data-testid="stFileUploaderDropzone"] {
-            background: #f7fbff !important;
-            border: 1.5px dashed var(--adept-border) !important;
-            border-radius: 12px !important;
-            padding-top: 1.1rem !important;
-            padding-bottom: 1.1rem !important;
+            background: #ffffff !important;
+            border: 1px dashed var(--apple-border) !important;
+            border-radius: var(--apple-radius-large) !important;
+            padding-top: 2rem !important;
+            padding-bottom: 2rem !important;
+            transition: border-color 0.2s ease;
+        }
+        
+        [data-testid="stFileUploaderDropzone"]:hover {
+            border-color: var(--apple-blue) !important;
         }
 
         [data-testid="stFileUploaderDropzone"] * {
-            color: var(--adept-text) !important;
-            fill: var(--adept-text) !important;
+            color: var(--apple-text) !important;
+            fill: var(--apple-text) !important;
         }
 
         [data-testid="stExpander"] {
-            border: 1px solid var(--adept-border);
-            border-radius: 14px;
-            box-shadow: var(--adept-shadow);
-            background: var(--adept-card);
+            border: 1px solid var(--apple-border);
+            border-radius: var(--apple-radius-large);
+            box-shadow: var(--apple-shadow);
+            background: var(--apple-card);
+            overflow: hidden;
+            transition: box-shadow 0.3s ease;
+        }
+
+        [data-testid="stExpander"]:hover {
+            box-shadow: var(--apple-shadow-hover);
         }
 
         [data-testid="stExpander"] details summary p {
-            color: var(--adept-text) !important;
-            font-weight: 650;
+            color: var(--apple-text) !important;
+            font-weight: 600;
+            font-size: 1.05rem;
         }
 
         [data-testid="stMetric"] {
-            border: 1px solid var(--adept-border);
-            border-radius: 12px;
-            padding: 0.65rem;
-            background: #f9fcff;
+            border: 1px solid var(--apple-border);
+            border-radius: var(--apple-radius-large);
+            padding: 1rem;
+            background: var(--apple-card);
+            box-shadow: var(--apple-shadow);
+            text-align: center;
         }
 
         [data-testid="stMetricLabel"] {
-            color: var(--adept-muted) !important;
-            font-weight: 600;
+            color: var(--apple-muted) !important;
+            font-weight: 500;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.4rem;
         }
 
         [data-testid="stMetricValue"] {
-            color: var(--adept-text) !important;
-            font-weight: 720;
+            color: var(--apple-text) !important;
+            font-weight: 700;
+            font-size: 2rem;
+            letter-spacing: -0.02em;
         }
 
         [data-testid="stMarkdownContainer"] p {
-            line-height: 1.65;
+            line-height: 1.6;
+            color: var(--apple-text);
         }
 
         [data-testid="stButton"] > button {
             border: none !important;
-            border-radius: 11px !important;
-            background: linear-gradient(135deg, #125089, #0b3e6f) !important;
+            border-radius: 980px !important; /* Pill shape */
+            background: var(--apple-blue) !important;
             color: #ffffff !important;
-            font-weight: 650 !important;
-            min-height: 2.7rem;
+            font-weight: 500 !important;
+            font-size: 1rem !important;
+            padding: 0.6rem 1.2rem !important;
+            min-height: 2.8rem;
+            transition: background-color 0.2s ease, transform 0.1s ease !important;
         }
 
         [data-testid="stButton"] > button:hover {
-            filter: brightness(1.06);
+            background: var(--apple-blue-hover) !important;
+        }
+        
+        [data-testid="stButton"] > button:active {
+            transform: scale(0.98) !important;
         }
 
         .adept-intro {
-            font-size: 0.98rem;
-            color: #25415f;
-            border: 1px solid var(--adept-border);
-            background: linear-gradient(90deg, #f8fbff 0%, #f4f9ff 100%);
-            border-radius: 12px;
-            padding: 0.8rem 0.95rem;
-            margin-bottom: 0.85rem;
+            font-size: 1.05rem;
+            color: var(--apple-text);
+            border: none;
+            background: var(--apple-card);
+            border-radius: var(--apple-radius-large);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--apple-shadow);
+            line-height: 1.5;
+            text-align: center;
         }
 
         .adept-note {
-            border: 1px solid var(--adept-border);
-            border-radius: 12px;
-            background: #f7fbff;
-            color: #2a4461;
-            padding: 0.75rem 0.9rem;
-            line-height: 1.55;
+            border: 1px solid var(--apple-border);
+            border-radius: var(--apple-radius-large);
+            background: #f5f5f7;
+            color: var(--apple-text);
+            padding: 1.2rem;
+            line-height: 1.5;
+            font-size: 0.95rem;
         }
 
         .adept-caption {
             font-size: 0.9rem;
-            color: var(--adept-muted);
-            border-left: 3px solid var(--adept-primary);
-            padding-left: 0.75rem;
-            margin-top: 0.25rem;
+            color: var(--apple-muted);
+            padding-left: 0.2rem;
+            margin-top: -0.5rem;
+            margin-bottom: 1rem;
         }
 
         @media (max-width: 980px) {
             section.main > div.block-container {
-                padding-left: 1rem;
-                padding-right: 1rem;
+                padding-left: 1.5rem;
+                padding-right: 1.5rem;
             }
         }
         </style>
@@ -443,35 +484,92 @@ def infer_provider_by_model(model_id: str) -> str:
     return "custom"
 
 
+def infer_provider_by_base_url(base_url: str) -> str:
+    """根据 Base URL 做启发式 provider 推断。"""
+
+    url = base_url.strip().lower()
+    if not url:
+        return "custom"
+
+    if "deepseek" in url:
+        return "deepseek"
+    if "dashscope.aliyuncs.com" in url or "qwen" in url:
+        return "qwen"
+    if "moonshot" in url or "kimi" in url:
+        return "kimi"
+    if "openai" in url:
+        return "openai"
+    return "custom"
+
+
+def infer_default_model_for_role(*, role: str, provider: str) -> str:
+    """按角色与 provider 返回默认模型；无法推断时返回空字符串。"""
+
+    defaults: dict[str, dict[str, str]] = {
+        "teacher": {
+            "deepseek": "deepseek-chat",
+            "qwen": "qwen-max",
+            "kimi": "moonshot-v1-8k",
+            "openai": "gpt-4.1",
+        },
+        "student": {
+            "deepseek": "deepseek-chat",
+            "qwen": "qwen-plus",
+            "kimi": "moonshot-v1-8k",
+            "openai": "gpt-4.1-mini",
+        },
+        "judge": {
+            "deepseek": "deepseek-chat",
+            "qwen": "qwen-max",
+            "kimi": "moonshot-v1-32k",
+            "openai": "gpt-4.1",
+        },
+    }
+    return defaults.get(role, {}).get(provider, "")
+
+
 def build_model_config_from_ui(
     *,
+    role: str,
     model_id: str,
     api_key: str,
     base_url_input: str,
     temperature: float,
     max_tokens: int,
     timeout_seconds: int,
+    allow_empty_model_id: bool = False,
 ) -> ModelConfig:
     """把界面参数转成后端模型配置。"""
 
     normalized_model = model_id.strip()
-    if not normalized_model:
-        raise ValueError("Model ID 不能为空")
-
     normalized_base_url = base_url_input.strip()
+
+    # 用户显式填写 Base URL 时，以 URL 推断结果优先，避免 provider 丢失。
+    provider_from_base_url = infer_provider_by_base_url(normalized_base_url)
+    provider_from_model = infer_provider_by_model(normalized_model) if normalized_model else "custom"
+
+    if provider_from_base_url != "custom":
+        provider = provider_from_base_url
+    elif provider_from_model != "custom":
+        provider = provider_from_model
+    else:
+        # 当无法自动识别 provider 时，默认回退到 OpenAI 兼容配置。
+        provider = "openai"
+
+    if not normalized_model:
+        if not allow_empty_model_id:
+            raise ValueError("Model ID 不能为空")
+        inferred_default_model = infer_default_model_for_role(role=role, provider=provider)
+        if not inferred_default_model:
+            raise ValueError(
+                f"{role.title()} Model ID 为空，且无法自动推断默认模型，请手动填写。"
+            )
+        normalized_model = inferred_default_model
+
     if normalized_base_url:
-        provider = "custom"
         base_url = normalized_base_url
     else:
-        inferred_provider = infer_provider_by_model(normalized_model)
-        if inferred_provider == "custom":
-            # 当无法自动识别 provider 时，默认回退到 OpenAI 兼容地址。
-            # 用户可在侧边栏通过各角色 Base URL 覆盖该行为。
-            provider = "openai"
-            base_url = DEFAULT_BASE_URLS["openai"]
-        else:
-            provider = inferred_provider
-            base_url = DEFAULT_BASE_URLS[inferred_provider]
+        base_url = DEFAULT_BASE_URLS.get(provider, DEFAULT_BASE_URLS["openai"])
 
     return ModelConfig(
         provider=provider,  # type: ignore[arg-type]
@@ -547,9 +645,10 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
         st.divider()
 
         judge_model_id = st.text_input(
-            label="Judge Model ID",
-            value="gpt-4.1",
-            placeholder="手动输入 Judge 模型 ID",
+            label="Judge Model ID（可选）",
+            value="",
+            placeholder="可留空，按平台自动选择默认模型（如 DeepSeek: deepseek-chat）",
+            help="留空时会根据 Judge Base URL 或模型平台自动推断默认模型。",
         ).strip()
         judge_api_key = st.text_input(
             label="Judge API Key",
@@ -600,7 +699,7 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
             type=["txt", "md", "json"],
         )
 
-        st.caption("提示：真实模式下需分别配置 Teacher/Student/Judge 的 API。")
+        st.caption("提示：真实模式下需分别配置 Teacher/Student/Judge 的 API；Judge Model ID 可留空。")
 
     ui_config = UIConfig(
         run_mode=run_mode,
@@ -715,7 +814,7 @@ def main() -> None:
 
     # 若用户点击运行，则执行 mock 评测。
     if run_clicked:
-        # 仅在真实模式要求必须提供 API Key 与 Model ID。
+        # 仅在真实模式要求必须提供 API Key 与 Teacher/Student Model ID。
         if ui_config.run_mode.startswith("Real"):
             missing_fields: list[str] = []
             if not ui_config.teacher_model_id.strip():
@@ -726,8 +825,6 @@ def main() -> None:
                 missing_fields.append("Student Model ID")
             if not ui_config.student_api_key.strip():
                 missing_fields.append("Student API Key")
-            if not ui_config.judge_model_id.strip():
-                missing_fields.append("Judge Model ID")
             if not ui_config.judge_api_key.strip():
                 missing_fields.append("Judge API Key")
 
@@ -745,6 +842,7 @@ def main() -> None:
             try:
                 if ui_config.run_mode.startswith("Real"):
                     teacher_cfg = build_model_config_from_ui(
+                        role="teacher",
                         model_id=ui_config.teacher_model_id,
                         api_key=ui_config.teacher_api_key,
                         base_url_input=ui_config.teacher_base_url,
@@ -753,6 +851,7 @@ def main() -> None:
                         timeout_seconds=ui_config.timeout_seconds,
                     )
                     student_cfg = build_model_config_from_ui(
+                        role="student",
                         model_id=ui_config.student_model_id,
                         api_key=ui_config.student_api_key,
                         base_url_input=ui_config.student_base_url,
@@ -761,12 +860,14 @@ def main() -> None:
                         timeout_seconds=ui_config.timeout_seconds,
                     )
                     judge_cfg = build_model_config_from_ui(
+                        role="judge",
                         model_id=ui_config.judge_model_id,
                         api_key=ui_config.judge_api_key,
                         base_url_input=ui_config.judge_base_url,
                         temperature=0.0,
                         max_tokens=ui_config.max_tokens,
                         timeout_seconds=ui_config.timeout_seconds,
+                        allow_empty_model_id=True,
                     )
 
                     app_config = AppConfig(
@@ -890,7 +991,7 @@ def main() -> None:
                             base_answer=base_answer,
                             improved_answer=improved_answer,
                             rubric_text=rubric_text,
-                            judge_model_id=ui_config.judge_model_id,
+                            judge_model_id=ui_config.judge_model_id or "judge-auto",
                         )
                         current_step += 1
                         progress_bar.progress(int(current_step / total_steps * 100), text="完成裁判评分")

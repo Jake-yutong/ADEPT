@@ -448,9 +448,49 @@ class OpenAICompatibleClient(LLMClient):
 class DeepSeekClient(OpenAICompatibleClient):
     """DeepSeek 客户端。"""
 
+    default_model: str = "deepseek-chat"
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        # 对齐 DeepSeek 官方示例：非流式场景默认 stream=False。
+        kwargs.setdefault("stream", False)
+
+        # 若上层未提供 model，则回退到 DeepSeek 通用可用模型。
+        if not self.config.model.strip() and not str(kwargs.get("model", "")).strip():
+            kwargs["model"] = self.default_model
+
+        return await super().generate(prompt, system_prompt=system_prompt, **kwargs)
+
 
 class QwenClient(OpenAICompatibleClient):
     """Qwen 客户端（DashScope 兼容接口）。"""
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        # DashScope 兼容接口在非流式调用中要求显式关闭 thinking。
+        # 这里统一兜底，避免默认参数导致 HTTP 400。
+        stream_raw = kwargs.get("stream", self.config.request_kwargs.get("stream", False))
+        if isinstance(stream_raw, bool):
+            is_stream = stream_raw
+        elif isinstance(stream_raw, str):
+            is_stream = stream_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            is_stream = bool(stream_raw)
+
+        if not is_stream:
+            kwargs["enable_thinking"] = False
+
+        return await super().generate(prompt, system_prompt=system_prompt, **kwargs)
 
 
 class KimiClient(OpenAICompatibleClient):

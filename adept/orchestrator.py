@@ -48,6 +48,39 @@ class EvaluatorProtocol(Protocol):
         ...
 
 
+class TeacherAPIProtocol(Protocol):
+    """Teacher API 协议。"""
+
+    async def teach(
+        self,
+        *,
+        source_material: str,
+        teaching_guideline: str,
+    ) -> Mapping[str, Any] | str:
+        ...
+
+
+class StudentAPIProtocol(Protocol):
+    """Student API 协议。"""
+
+    async def answer_baseline(
+        self,
+        *,
+        source_material: str,
+        design_question: str,
+    ) -> Mapping[str, Any] | str:
+        ...
+
+    async def answer_intervention(
+        self,
+        *,
+        source_material: str,
+        teacher_output: str,
+        design_question: str,
+    ) -> Mapping[str, Any] | str:
+        ...
+
+
 class PromptTemplateEngine(Protocol):
     """Prompt 模板引擎协议。"""
 
@@ -166,9 +199,13 @@ class ADEPTOrchestrator:
         logger: JsonlLogger,
         prompt_engine: PromptTemplateEngine | None = None,
         max_concurrency: int = 5,
+        teacher_api: TeacherAPIProtocol | None = None,
+        student_api: StudentAPIProtocol | None = None,
     ) -> None:
         self.teacher_client = teacher_client
         self.student_client = student_client
+        self.teacher_api = teacher_api
+        self.student_api = student_api
         self.evaluator = evaluator
         self.logger = logger
         self.prompt_engine = prompt_engine or DefaultPromptTemplateEngine()
@@ -229,11 +266,22 @@ class ADEPTOrchestrator:
             design_question = self._required_text(item, "design_question")
             reference_answer = item.get("reference_answer")
 
-            baseline_prompt = self.prompt_engine.render_student_baseline_prompt(
-                source_material=source_material,
-                design_question=design_question,
-            )
-            baseline_answer = await self.student_client.generate(baseline_prompt)
+            if self.student_api is not None:
+                baseline_result = await self.student_api.answer_baseline(
+                    source_material=source_material,
+                    design_question=design_question,
+                )
+                baseline_prompt, baseline_answer = self._normalize_api_call_result(
+                    baseline_result,
+                    default_prompt="[StudentAPI] baseline prompt 由 API 内部生成",
+                    answer_field_name="answer",
+                )
+            else:
+                baseline_prompt = self.prompt_engine.render_student_baseline_prompt(
+                    source_material=source_material,
+                    design_question=design_question,
+                )
+                baseline_answer = await self.student_client.generate(baseline_prompt)
 
             baseline_judge = await self.evaluator.evaluate(
                 source_material=source_material,
@@ -245,18 +293,41 @@ class ADEPTOrchestrator:
             s_base = baseline_result.score
             base_reason = baseline_result.reason
 
-            teacher_prompt = self.prompt_engine.render_teacher_prompt(
-                source_material=source_material,
-                teaching_guideline=teaching_guideline,
-            )
-            teacher_output = await self.teacher_client.generate(teacher_prompt)
+            if self.teacher_api is not None:
+                teacher_result = await self.teacher_api.teach(
+                    source_material=source_material,
+                    teaching_guideline=teaching_guideline,
+                )
+                teacher_prompt, teacher_output = self._normalize_api_call_result(
+                    teacher_result,
+                    default_prompt="[TeacherAPI] teach prompt 由 API 内部生成",
+                    answer_field_name="answer",
+                )
+            else:
+                teacher_prompt = self.prompt_engine.render_teacher_prompt(
+                    source_material=source_material,
+                    teaching_guideline=teaching_guideline,
+                )
+                teacher_output = await self.teacher_client.generate(teacher_prompt)
 
-            intervention_prompt = self.prompt_engine.render_student_intervention_prompt(
-                source_material=source_material,
-                teacher_output=teacher_output,
-                design_question=design_question,
-            )
-            intervention_answer = await self.student_client.generate(intervention_prompt)
+            if self.student_api is not None:
+                intervention_result = await self.student_api.answer_intervention(
+                    source_material=source_material,
+                    teacher_output=teacher_output,
+                    design_question=design_question,
+                )
+                intervention_prompt, intervention_answer = self._normalize_api_call_result(
+                    intervention_result,
+                    default_prompt="[StudentAPI] intervention prompt 由 API 内部生成",
+                    answer_field_name="answer",
+                )
+            else:
+                intervention_prompt = self.prompt_engine.render_student_intervention_prompt(
+                    source_material=source_material,
+                    teacher_output=teacher_output,
+                    design_question=design_question,
+                )
+                intervention_answer = await self.student_client.generate(intervention_prompt)
 
             intervention_judge = await self.evaluator.evaluate(
                 source_material=source_material,
@@ -378,3 +449,45 @@ class ADEPTOrchestrator:
 
         raw_copy = dict(result)
         return JudgeResult(score=score, reason=reason_raw.strip(), raw=raw_copy)
+
+    @staticmethod
+    def _normalize_api_call_result(
+        result: Any,
+        *,
+        default_prompt: str,
+        answer_field_name: str,
+    ) -> tuple[str, str]:
+        """兼容 teacher/student API 返回字符串或结构化对象。"""
+
+        if isinstance(result, str):
+            answer = result.strip()
+            if not answer:
+                raise ValueError(f"API 返回空字符串: {answer_field_name}")
+            return default_prompt, answer
+
+        if hasattr(result, "prompt") and hasattr(result, answer_field_name):
+            prompt = str(getattr(result, "prompt") or "").strip() or default_prompt
+            answer = str(getattr(result, answer_field_name) or "").strip()
+            if not answer:
+                raise ValueError(f"API 返回缺少非空答案字段: {answer_field_name}")
+            return prompt, answer
+
+        if not isinstance(result, Mapping):
+            raise ValueError(f"API 返回类型不支持: {type(result)!r}")
+
+        prompt_raw = result.get("prompt")
+        prompt = str(prompt_raw).strip() if prompt_raw is not None else default_prompt
+        if not prompt:
+            prompt = default_prompt
+
+        answer_raw = result.get(answer_field_name)
+        if answer_raw is None:
+            answer_raw = result.get("output")
+        if answer_raw is None:
+            answer_raw = result.get("response")
+
+        answer = str(answer_raw or "").strip()
+        if not answer:
+            raise ValueError(f"API 返回缺少非空答案字段: {answer_field_name}")
+
+        return prompt, answer

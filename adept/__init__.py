@@ -12,10 +12,21 @@ from .models import (
     ModelConfig,
     RuntimeConfig,
 )
+from .apis import (
+    APICallResult,
+    APIBundle,
+    RubricScoringAPI,
+    StudentAPI,
+    TeacherAPI,
+    build_api_bundle,
+    build_orchestrator_with_apis,
+)
 from .orchestrator import ADEPTOrchestrator, DefaultPromptTemplateEngine, JsonlLogger
 
 __all__ = [
     "ADEPTOrchestrator",
+    "APICallResult",
+    "APIBundle",
     "AppConfig",
     "ConfigLoader",
     "DefaultPromptTemplateEngine",
@@ -23,5 +34,10 @@ __all__ = [
     "LLMClient",
     "LLMClientFactory",
     "ModelConfig",
+    "RubricScoringAPI",
     "RuntimeConfig",
+    "StudentAPI",
+    "TeacherAPI",
+    "build_api_bundle",
+    "build_orchestrator_with_apis",
 ]

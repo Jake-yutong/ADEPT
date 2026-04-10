@@ -341,7 +341,12 @@ class LLMClient(ABC):
         """懒加载 aiohttp 会话，避免提前占用连接资源。"""
 
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+            # 使用 sock_read 而非 total 控制读取超时，避免推理模型生成长响应时
+            # total 计时包含排队等待时间，导致读取阶段被误判为超时。
+            timeout = aiohttp.ClientTimeout(
+                connect=30,
+                sock_read=self.config.timeout_seconds,
+            )
             self._session = aiohttp.ClientSession(timeout=timeout)
             self._owns_session = True
         return self._session

@@ -879,9 +879,10 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
             timeout_seconds = st.number_input(
                 label="Timeout (seconds)",
                 min_value=10,
-                max_value=300,
-                value=90,
-                step=5,
+                max_value=600,
+                value=120,
+                step=10,
+                help="推理模型（如 deepseek-reasoner）生成 rubric 评分耗时较长，建议设置 180-300 秒。",
             )
 
         st.divider()

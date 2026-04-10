@@ -186,20 +186,18 @@ def test_rubric_scoring_api_retries_when_first_response_invalid() -> None:
     asyncio.run(_run())
 
 
-def test_rubric_scoring_api_rejects_out_of_range_score() -> None:
+def test_rubric_scoring_api_clamps_out_of_range_score() -> None:
     async def _run() -> None:
-        client = QueueLLMClient(['{"score": 999, "reason": "非法分数"}'])
+        # 越界分数应被 clamp 到 [min_score, max_score]，而不是抛出异常
+        client = QueueLLMClient(['{"score": 999, "reason": "超出范围的分数"}'])
         api = RubricScoringAPI(client, min_score=0, max_score=100)
 
-        try:
-            await api.evaluate(
-                source_material="字体排印案例",
-                design_question="如何提升层级可读性？",
-                student_answer="通过字号与字重建立视觉层级",
-            )
-            raise AssertionError("预期应抛出 ValueError，但未抛出")
-        except ValueError as exc:
-            assert "超出范围" in str(exc)
+        result = await api.evaluate(
+            source_material="字体排印案例",
+            design_question="如何提升层级可读性？",
+            student_answer="通过字号与字重建立视觉层级",
+        )
+        assert result["score"] == 100, f"期望 clamp 到 100，实际得到 {result['score']}"
 
     asyncio.run(_run())
 

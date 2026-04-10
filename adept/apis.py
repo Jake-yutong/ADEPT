@@ -265,7 +265,19 @@ class RubricScoringAPI:
                         },
                     }
 
-        score = self._parse_score(parsed_json.get("score"))
+        try:
+            score = self._parse_score(parsed_json.get("score"))
+        except ValueError:
+            # score 字段无法解析（如模型返回 null / 字符串），降级为 0 分
+            return {
+                "score": 0,
+                "reason": f"评分接口返回的 score 字段无法解析：{parsed_json.get('score')!r}，已降级为 0 分。",
+                "raw": {
+                    "response_text": raw_text,
+                    "parsed_json": parsed_json,
+                    "parse_error": True,
+                },
+            }
 
         reason_raw = parsed_json.get("reason")
         reason = str(reason_raw or "").strip() or "评分接口未提供理由"
@@ -281,14 +293,18 @@ class RubricScoringAPI:
 
     def _parse_score(self, score_raw: Any) -> int:
         try:
-            score = int(score_raw)
+            # 先尝试直接转 int，失败时再尝试 float→int（兼容 "70.5" 形式）
+            try:
+                score = int(score_raw)
+            except (TypeError, ValueError):
+                score = int(float(score_raw))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Rubric 评分结果中的 score 非法: {score_raw}") from exc
 
+        # 超出范围时 clamp 而非抛异常，避免因 judge 模型偶尔返回边界外分数
+        # 导致三次重试全部失败并降级为 0 分
         if score < self.min_score or score > self.max_score:
-            raise ValueError(
-                f"Rubric 评分结果超出范围: {score}，期望区间 [{self.min_score}, {self.max_score}]"
-            )
+            score = max(self.min_score, min(self.max_score, score))
         return score
 
     @classmethod

@@ -291,21 +291,62 @@ class RubricScoringAPI:
             },
         }
 
-    def _parse_score(self, score_raw: Any) -> int:
-        try:
-            # 先尝试直接转 int，失败时再尝试 float→int（兼容 "70.5" 形式）
-            try:
-                score = int(score_raw)
-            except (TypeError, ValueError):
-                score = int(float(score_raw))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Rubric 评分结果中的 score 非法: {score_raw}") from exc
+    # 匹配 "numerator/denominator" 或 "分数/总分" 格式（取分子）
+    _fraction_pattern = re.compile(r'^(-?\d+(?:\.\d+)?)\s*/\s*\d')
+    # 匹配 "70%" 或 "70 %" 格式
+    _percent_pattern = re.compile(r'^(-?\d+(?:\.\d+)?)\s*%')
+    # 匹配带尾缀文字的数字，如 "70 分" "70points"
+    _leading_number_pattern = re.compile(r'^(-?\d+(?:\.\d+)?)')
 
-        # 超出范围时 clamp 而非抛异常，避免因 judge 模型偶尔返回边界外分数
-        # 导致三次重试全部失败并降级为 0 分
-        if score < self.min_score or score > self.max_score:
-            score = max(self.min_score, min(self.max_score, score))
-        return score
+    def _parse_score(self, score_raw: Any) -> int:
+        """将 judge 模型返回的 score 字段解析为合法整数并 clamp 到允许范围。
+
+        按优先级依次尝试以下解析策略：
+        1. 直接 int 转换（最常见）
+        2. float → int（兼容 "70.5"）
+        3. 分数格式 "70/100" → 取分子 70
+        4. 百分比格式 "70%" → 70
+        5. 数字前缀 "70 points" / "70分" → 70
+
+        所有越界分数一律 clamp，不抛异常，避免因单次 judge 输出格式偏差
+        导致三次重试全部失败并降级为 0 分。
+        """
+        if score_raw is None:
+            raise ValueError("Rubric 评分结果中的 score 为 None")
+
+        score_str = str(score_raw).strip()
+
+        # 策略 1 & 2：直接整数 / 浮点
+        try:
+            score = int(score_str)
+            return max(self.min_score, min(self.max_score, score))
+        except ValueError:
+            pass
+        try:
+            score = int(float(score_str))
+            return max(self.min_score, min(self.max_score, score))
+        except ValueError:
+            pass
+
+        # 策略 3："70/100" → 70
+        m = self._fraction_pattern.match(score_str)
+        if m:
+            score = int(float(m.group(1)))
+            return max(self.min_score, min(self.max_score, score))
+
+        # 策略 4："70%" → 70
+        m = self._percent_pattern.match(score_str)
+        if m:
+            score = int(float(m.group(1)))
+            return max(self.min_score, min(self.max_score, score))
+
+        # 策略 5："70 points" / "70分" → 取最前面的数字
+        m = self._leading_number_pattern.match(score_str)
+        if m:
+            score = int(float(m.group(1)))
+            return max(self.min_score, min(self.max_score, score))
+
+        raise ValueError(f"Rubric 评分结果中的 score 无法解析: {score_raw!r}")
 
     @classmethod
     def _extract_json_object(cls, raw_text: str) -> dict[str, Any]:
@@ -403,18 +444,19 @@ class RubricScoringAPI:
     def _extract_score_reason_fallback(raw_text: str) -> dict[str, Any] | None:
         """当返回非标准 JSON 时，启发式提取 score/reason。"""
 
+        # 兼容整数和浮点数（如 "score: 70.5"）
         score_patterns = [
-            r'"score"\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)',
-            r"\bscore\b\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)",
-            r"分数\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)",
-            r"得分\s*[:：]\s*(-?\d+)(?!\s*[-~到至]\s*\d+)",
+            r'"score"\s*[:：]\s*(-?\d+(?:\.\d+)?)(?!\s*[-~到至]\s*\d+)',
+            r"\bscore\b\s*[:：]\s*(-?\d+(?:\.\d+)?)(?!\s*[-~到至]\s*\d+)",
+            r"分数\s*[:：]\s*(-?\d+(?:\.\d+)?)(?!\s*[-~到至]\s*\d+)",
+            r"得分\s*[:：]\s*(-?\d+(?:\.\d+)?)(?!\s*[-~到至]\s*\d+)",
         ]
         score_candidates: list[tuple[int, int]] = []
         for pattern in score_patterns:
             for matched in re.finditer(pattern, raw_text, re.IGNORECASE):
                 if RubricScoringAPI._is_template_context(raw_text, matched.start(), matched.end()):
                     continue
-                score_candidates.append((matched.start(), int(matched.group(1))))
+                score_candidates.append((matched.start(), int(float(matched.group(1)))))
 
         if not score_candidates:
             return None

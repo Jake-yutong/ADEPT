@@ -202,6 +202,142 @@ def test_rubric_scoring_api_clamps_out_of_range_score() -> None:
     asyncio.run(_run())
 
 
+def test_rubric_scoring_api_clamps_negative_score() -> None:
+    async def _run() -> None:
+        # 负数分数应 clamp 到 min_score=0，不抛异常
+        client = QueueLLMClient(['{"score": -60, "reason": "判负分"}'])
+        api = RubricScoringAPI(client, min_score=0, max_score=100)
+
+        result = await api.evaluate(
+            source_material="交互原型案例",
+            design_question="如何降低操作出错率？",
+            student_answer="增加确认步骤和撤销功能",
+        )
+        assert result["score"] == 0
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_parses_fraction_score() -> None:
+    async def _run() -> None:
+        # judge 返回 "70/100" 形式的分数，应正确解析为 70
+        client = QueueLLMClient(['{"score": "70/100", "reason": "部分要点覆盖"}'])
+        api = RubricScoringAPI(client, min_score=0, max_score=100)
+
+        result = await api.evaluate(
+            source_material="空间导视案例",
+            design_question="如何重构导视层级？",
+            student_answer="按使用频次重新排列标识层级",
+        )
+        assert result["score"] == 70
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_parses_percentage_score() -> None:
+    async def _run() -> None:
+        # judge 返回 "70%" 形式的分数，应正确解析为 70
+        client = QueueLLMClient(['{"score": "70%", "reason": "达到及格水平"}'])
+        api = RubricScoringAPI(client, min_score=0, max_score=100)
+
+        result = await api.evaluate(
+            source_material="品牌色彩系统案例",
+            design_question="如何定义品牌主色？",
+            student_answer="先定义语义色，再建立层级映射",
+        )
+        assert result["score"] == 70
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_parses_score_with_suffix() -> None:
+    async def _run() -> None:
+        # judge 返回 "75分" / "75 points" 形式，应取前缀数字 75
+        client = QueueLLMClient(['{"score": "75分", "reason": "方案较完整"}'])
+        api = RubricScoringAPI(client, min_score=0, max_score=100)
+
+        result = await api.evaluate(
+            source_material="服务设计案例",
+            design_question="如何简化服务流程？",
+            student_answer="删除低价值步骤，合并冗余触点",
+        )
+        assert result["score"] == 75
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_custom_score_range() -> None:
+    async def _run() -> None:
+        # 使用非标准满分（如 150 分制）的 rubric 场景
+        client = QueueLLMClient(['{"score": 120, "reason": "优秀答案"}'])
+        api = RubricScoringAPI(client, min_score=0, max_score=150)
+
+        result = await api.evaluate(
+            source_material="高分制评测案例",
+            design_question="综合设计策略题",
+            student_answer="完整回答了所有维度",
+        )
+        assert result["score"] == 120
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_custom_range_clamps_overflow() -> None:
+    async def _run() -> None:
+        # 自定义分值范围下，越界仍应被 clamp，不抛异常
+        client = QueueLLMClient(['{"score": 200, "reason": "超出 150 的分数"}'])
+        api = RubricScoringAPI(client, min_score=0, max_score=150)
+
+        result = await api.evaluate(
+            source_material="高分制评测案例",
+            design_question="综合设计策略题",
+            student_answer="答案内容",
+        )
+        assert result["score"] == 150
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_null_score_degrades_gracefully() -> None:
+    async def _run() -> None:
+        # judge 返回 score=null，三次重试全部失败后应降级为 0 分而非崩溃
+        client = QueueLLMClient([
+            '{"score": null, "reason": "无法评分"}',
+            '{"score": null, "reason": "再次无法评分"}',
+            '{"score": null, "reason": "第三次无法评分"}',
+        ])
+        api = RubricScoringAPI(client, min_score=0, max_score=100)
+
+        result = await api.evaluate(
+            source_material="异常场景测试",
+            design_question="测试题目",
+            student_answer="测试答案",
+        )
+        # score 无法解析时应降级为 0，不抛异常
+        assert result["score"] == 0
+        assert "无法解析" in result["reason"] or result["score"] == 0
+
+    asyncio.run(_run())
+
+
+def test_rubric_scoring_api_fallback_float_score_in_freetext() -> None:
+    async def _run() -> None:
+        # judge 以非 JSON 格式返回浮点分数，启发式解析应正确提取
+        client = QueueLLMClient([
+            "综合评估：\nscore: 77.5\n理由: 答案覆盖了主要知识点但缺乏深度。"
+        ])
+        api = RubricScoringAPI(client)
+
+        result = await api.evaluate(
+            source_material="公共设施可达性研究",
+            design_question="如何改善社区公共空间的无障碍通道？",
+            student_answer="增加坡道和触觉导盲铺装",
+        )
+        assert result["score"] == 77
+
+    asyncio.run(_run())
+
+
 def test_orchestrator_runs_with_teacher_student_and_rubric_apis(tmp_path: Path) -> None:
     async def _run() -> None:
         teacher_client = QueueLLMClient(["导师建议：先确认约束，再展开方案"])

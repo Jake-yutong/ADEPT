@@ -56,6 +56,7 @@ class TeacherAPIProtocol(Protocol):
         *,
         source_material: str,
         teaching_guideline: str,
+        design_question: str = "",
     ) -> Mapping[str, Any] | str:
         ...
 
@@ -84,7 +85,7 @@ class StudentAPIProtocol(Protocol):
 class PromptTemplateEngine(Protocol):
     """Prompt 模板引擎协议。"""
 
-    def render_teacher_prompt(self, source_material: str, teaching_guideline: str) -> str:
+    def render_teacher_prompt(self, source_material: str, teaching_guideline: str, design_question: str = "") -> str:
         ...
 
     def render_student_baseline_prompt(self, source_material: str, design_question: str) -> str:
@@ -105,34 +106,49 @@ class DefaultPromptTemplateEngine:
     该实现基于字符串模板，便于后续替换为 Jinja2 引擎。
     """
 
-    def render_teacher_prompt(self, source_material: str, teaching_guideline: str) -> str:
+    def render_teacher_prompt(self, source_material: str, teaching_guideline: str, design_question: str = "") -> str:
+        question_section = ""
+        if design_question:
+            question_section = (
+                "【学生将要作答的题目】\n"
+                f"{design_question}\n\n"
+            )
+
         return (
-            "你是一位设计教育导师，请依据以下素材和教学大纲，为学生生成可执行的学习辅导。\n\n"
+            "你是一位设计教育导师。请根据以下信息为学生提供教学辅导。\n\n"
+            "【重要约束】\n"
+            "- 你的角色是辅导而非代答，绝对不要直接告诉学生选择题的正确选项（A/B/C/D）\n"
+            "- 不要直接给出简答题的完整答案\n"
+            "- 你应该帮助学生理解核心概念，让学生自己得出答案\n\n"
             "【设计素材】\n"
             f"{source_material}\n\n"
             "【教学大纲】\n"
             f"{teaching_guideline}\n\n"
-            "请输出：\n"
-            "1) 关键概念拆解\n"
-            "2) 解题步骤建议\n"
-            "3) 常见误区提醒\n"
-            "4) 作答质量检查清单\n"
+            f"{question_section}"
+            "请输出以下辅导内容：\n"
+            "1) 核心概念精讲：本题涉及的关键理论定义、区分与内在逻辑\n"
+            "2) 选择题思维引导：帮助学生理解各选项涉及的概念差异（不要指出正确答案）\n"
+            "3) 简答题答题框架：推荐的作答结构、应涵盖的知识点、得分关键维度\n"
+            "4) 常见误区提醒：学生容易混淆或遗漏的要点\n"
         )
 
     def render_student_baseline_prompt(self, source_material: str, design_question: str) -> str:
         return (
-            "请你作为设计专业学生，仅根据提供的设计素材回答问题。\n\n"
+            "请你作为设计专业学生，仅根据提供的设计素材回答以下题目。\n\n"
             "【设计素材】\n"
             f"{source_material}\n\n"
-            "【设计问题】\n"
+            "【题目】\n"
             f"{design_question}\n\n"
             "作答要求：\n"
-            "1) 必须直接回答‘设计问题’，不要只做素材总结；\n"
-            "2) 若设计问题包含多个子问题，必须逐条完整回答，不可漏答；\n"
-            "3) 回复结构按‘问题1/问题2/...’分段；\n"
-            "4) 至少给出 4 个可执行策略或步骤；\n"
-            "5) 每个策略说明理由与落地方式；\n"
-            "6) 若内容较长请完整输出，不要中途省略。"
+            "你必须完成以下两个部分，缺一不可：\n\n"
+            "第一部分 - 选择题：\n"
+            "给出你选择的选项字母（如 B），不需要解释。\n\n"
+            "第二部分 - 简答题：\n"
+            "直接给出答案，100字以内，要点明确。\n\n"
+            "回答格式：\n"
+            "选择题：X\n"
+            "简答题：（你的答案）\n\n"
+            "注意：两个部分都必须回答，不可以只答选择题或只答简答题。"
         )
 
     def render_student_intervention_prompt(
@@ -142,20 +158,23 @@ class DefaultPromptTemplateEngine:
         design_question: str,
     ) -> str:
         return (
-            "请你作为设计专业学生，先学习导师辅导，再回答同一个设计问题。\n\n"
-            "【设计素材】\n"
-            f"{source_material}\n\n"
+            "请你作为设计专业学生，你已经学习了导师的辅导内容，现在请回答以下题目。\n\n"
             "【导师辅导内容】\n"
             f"{teacher_output}\n\n"
-            "【设计问题】\n"
+            "【设计素材】\n"
+            f"{source_material}\n\n"
+            "【题目】\n"
             f"{design_question}\n\n"
             "作答要求：\n"
-            "1) 先说明你将如何应用导师辅导，再完整回答设计问题；\n"
-            "2) 若设计问题包含多个子问题，必须逐条完整回答，不可漏答；\n"
-            "3) 回复结构按‘问题1/问题2/...’分段；\n"
-            "4) 至少给出 4 个可执行策略或步骤；\n"
-            "5) 显式体现相对 baseline 的改进点；\n"
-            "6) 若内容较长请完整输出，不要中途省略。"
+            "你必须完成以下两个部分，缺一不可：\n\n"
+            "第一部分 - 选择题：\n"
+            "给出你选择的选项字母（如 B），不需要解释。\n\n"
+            "第二部分 - 简答题：\n"
+            "运用导师辅导中学到的知识，直接给出答案，100字以内。\n\n"
+            "回答格式：\n"
+            "选择题：X\n"
+            "简答题：（你的答案）\n\n"
+            "注意：两个部分都必须回答，不可以只答选择题或只答简答题。"
         )
 
 
@@ -309,6 +328,7 @@ class ADEPTOrchestrator:
                 teacher_result = await self.teacher_api.teach(
                     source_material=source_material,
                     teaching_guideline=teaching_guideline,
+                    design_question=design_question,
                 )
                 teacher_prompt, teacher_output = self._normalize_api_call_result(
                     teacher_result,

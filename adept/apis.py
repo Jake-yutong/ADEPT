@@ -46,10 +46,11 @@ class TeacherAPI:
         self.prompt_engine = prompt_engine or DefaultPromptTemplateEngine()
         self.system_prompt = system_prompt
 
-    async def teach(self, *, source_material: str, teaching_guideline: str) -> APICallResult:
+    async def teach(self, *, source_material: str, teaching_guideline: str, design_question: str = "") -> APICallResult:
         prompt = self.prompt_engine.render_teacher_prompt(
             source_material=source_material,
             teaching_guideline=teaching_guideline,
+            design_question=design_question,
         )
         answer = await self.client.generate(prompt, system_prompt=self.system_prompt)
         return APICallResult(prompt=prompt, answer=answer)
@@ -59,9 +60,15 @@ class StudentAPI:
     """Student API：提供 baseline 与 intervention 两种作答能力。"""
 
     _subquestion_pattern = re.compile(
-        r"(?:^|\n)\s*(?:第\s*\d+\s*[题问]|[（(]?\d+[）)\.、]|[一二三四五六七八九十]+[、\.])"
+        r"(?:^|\n)\s*(?:第\s*\d+\s*[题问小]|[（(]?\d+[）)\.、:\:]|[一二三四五六七八九十]+[、\.\s]|Q\d+)"
     )
-    _choice_pattern = re.compile(r"选择题|单选|多选|(?:^|[\s\n])[A-Da-d][\.、\)]")
+    _choice_pattern = re.compile(
+        r"选择题|单选|多选|判断题"
+        r"|(?:^|[\s\n])[A-Da-d][\.\.、\)）\s]"
+        r"|选项[：:]"
+        r"|以下.*(?:正确|错误|合适|不正确|不合适)的是",
+        re.MULTILINE,
+    )
 
     def __init__(
         self,
@@ -118,7 +125,8 @@ class StudentAPI:
         numbered_count = len(cls._subquestion_pattern.findall(text))
         question_mark_count = text.count("?") + text.count("？")
         has_choice = bool(cls._choice_pattern.search(text))
-        return numbered_count >= 2 or question_mark_count >= 2 or has_choice
+        # 降低门槛：只要有子问题编号、多个问号、或任何选择题元素即触发
+        return numbered_count >= 1 or question_mark_count >= 2 or has_choice
 
     @staticmethod
     def _build_coverage_rewrite_prompt(
@@ -129,12 +137,12 @@ class StudentAPI:
         teacher_output: str | None,
     ) -> str:
         sections = [
-            "你需要修订当前答案，确保完整覆盖设计问题的全部子问题与题型（含选择题）。",
+            "检查当前答案是否完整覆盖了题目中的选择题和简答题。",
             "",
             "【设计素材】",
             source_material,
             "",
-            "【设计问题】",
+            "【题目】",
             design_question,
         ]
 
@@ -148,11 +156,11 @@ class StudentAPI:
                 current_answer,
                 "",
                 "修订要求：",
-                "1) 若当前答案已完整覆盖所有子问题与题型，原样返回；",
-                "2) 若存在漏答，补全后返回完整最终答案；",
-                "3) 结构按“问题1/问题2/...”分段；",
-                "4) 对选择题需明确给出选项字母与理由；",
-                "5) 只返回最终答案，不要解释你的检查过程。",
+                "1) 若当前答案已包含选择题答案和简答题答案，原样返回；",
+                "2) 若选择题未作答，补上选项字母；",
+                "3) 若简答题未作答或不完整，补全答案（100字以内）；",
+                "4) 回答格式：选择题：X  简答题：（答案）",
+                "5) 只返回最终答案，不要解释检查过程。",
             ]
         )
 
@@ -229,7 +237,33 @@ class RubricScoringAPI:
                 + "\n\n请严格按要求只返回 JSON 对象，不要包含解释、代码块或其他文本。"
             )
             raw_text = await self.client.generate(repair_prompt, system_prompt=self.system_prompt)
-            parsed_json = self._extract_json_object(raw_text)
+            try:
+                parsed_json = self._extract_json_object(raw_text)
+            except ValueError:
+                # 第二轮仍失败，用极简 prompt 做最后尝试
+                minimal_prompt = (
+                    "请对以下学生答案打分，只返回一个JSON对象，格式为 "
+                    '{"score": 整数, "reason": "理由"}，'
+                    f"分数范围 {self.min_score}-{self.max_score}。\n\n"
+                    f"学生答案：{student_answer[:500]}\n\n"
+                    "只返回JSON，不要任何其他文字。"
+                )
+                raw_text = await self.client.generate(
+                    minimal_prompt, system_prompt="只返回合法JSON。"
+                )
+                try:
+                    parsed_json = self._extract_json_object(raw_text)
+                except ValueError:
+                    # 所有尝试均失败，返回降级结果而非崩溃
+                    return {
+                        "score": 0,
+                        "reason": "评分接口多次返回非法格式，无法解析，已降级为 0 分。",
+                        "raw": {
+                            "response_text": raw_text,
+                            "parsed_json": None,
+                            "parse_error": True,
+                        },
+                    }
 
         score = self._parse_score(parsed_json.get("score"))
 
@@ -450,24 +484,89 @@ class RubricScoringAPI:
     ) -> str:
         reference_text = reference_answer if reference_answer else "无"
 
+        # 尝试提取与当前题目匹配的局部 rubric
+        per_question_rubric = self._extract_matching_rubric(design_question)
+
         return (
-            "请你基于 Rubric 对学生答案评分。\n\n"
-            "【Rubric】\n"
-            f"{self.rubric}\n\n"
+            "请你作为严格的设计教育评分专家，基于 Rubric 对学生答案进行逐项评分。\n\n"
+            "【评分标准 Rubric】\n"
+            f"{per_question_rubric}\n\n"
             "【设计素材】\n"
             f"{source_material}\n\n"
-            "【设计问题】\n"
+            "【题目】\n"
             f"{design_question}\n\n"
             "【学生答案】\n"
             f"{student_answer}\n\n"
             "【参考答案】\n"
             f"{reference_text}\n\n"
+            "评分指南：\n"
+            "1) 选择题（30分）：答对得30分，答错得0分，未作答得0分；\n"
+            "2) 简答题（70分）：按 Rubric 中各维度逐项评分后累加；\n"
+            "3) 总分 = 选择题得分 + 简答题得分；\n"
+            "4) 必须检查：学生是否回答了选择题？是否回答了简答题？漏答则该部分0分；\n"
+            "5) 简答题超过100字酌情扣5-15分；\n\n"
             "输出要求：\n"
-            f"1) score 必须是 {self.min_score}-{self.max_score} 的整数\n"
-            "2) reason 必须为简洁中文说明\n"
-            "3) 只返回 JSON，不要附加任何其他文字\n"
-            "4) JSON 仅包含两个键：score（整数）和 reason（字符串）"
+            f"score 必须是 {self.min_score}-{self.max_score} 的整数，"
+            "reason 必须为简洁中文说明（含各部分得分明细）。\n"
+            "只返回 JSON，不要附加任何其他文字、代码块标记或解释。\n"
+            "JSON 仅包含两个键：score（整数）和 reason（字符串）。\n\n"
+            '输出示例：{"score": 75, "reason": "选择题30分（答对B）；简答题45分：概念准确性25/35，案例相关性15/25，表达质量5/10。"}'
         )
+
+    def _extract_matching_rubric(self, design_question: str) -> str:
+        """从完整 rubric 中提取与当前题目匹配的局部评分标准。"""
+
+        # 从 design_question 中提取题号
+        q_match = re.search(r"QUESTION\s+(\d+)", design_question)
+        if not q_match:
+            return self.rubric
+
+        q_num = q_match.group(1)
+
+        # 在 rubric 中查找对应的 RUBRIC N 或 QUESTION N 段落
+        patterns = [
+            rf"(?:RUBRIC\s+{q_num}|QUESTION\s+{q_num})\b",
+        ]
+
+        for pattern in patterns:
+            matches = list(re.finditer(pattern, self.rubric, re.IGNORECASE))
+            if not matches:
+                continue
+
+            start = matches[0].start()
+            # 向前找到段落开头（分隔线）
+            line_start = self.rubric.rfind("\n", 0, start)
+            if line_start < 0:
+                line_start = 0
+            section_start = self.rubric.rfind("---", 0, line_start)
+            if section_start < 0:
+                section_start = line_start
+
+            # 向后找到下一个 RUBRIC 段落或文件末尾
+            next_rubric = re.search(
+                rf"(?:^-{{3,}}\s*\n\s*RUBRIC\s+(?!{q_num}\b))",
+                self.rubric[matches[0].end():],
+                re.MULTILINE,
+            )
+            if next_rubric:
+                section_end = matches[0].end() + next_rubric.start()
+            else:
+                # 也尝试找下一个 PART 分隔
+                next_part = re.search(
+                    r"^={3,}",
+                    self.rubric[matches[0].end():],
+                    re.MULTILINE,
+                )
+                if next_part:
+                    section_end = matches[0].end() + next_part.start()
+                else:
+                    section_end = len(self.rubric)
+
+            extracted = self.rubric[section_start:section_end].strip()
+            if len(extracted) > 50:
+                return extracted
+
+        return self.rubric
 
 
 @dataclass(slots=True)

@@ -79,10 +79,10 @@ def test_student_api_supports_baseline_and_intervention() -> None:
         )
 
         assert "仅根据提供的设计素材" in baseline.prompt
-        assert "逐条完整回答" in baseline.prompt
+        assert "必须回答" in baseline.prompt
         assert baseline.answer == "baseline 答案"
-        assert "先学习导师辅导" in intervention.prompt
-        assert "逐条完整回答" in intervention.prompt
+        assert "导师" in intervention.prompt
+        assert "必须回答" in intervention.prompt
         assert intervention.answer == "intervention 答案"
 
     asyncio.run(_run())

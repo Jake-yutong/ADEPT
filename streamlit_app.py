@@ -402,22 +402,134 @@ def load_question_samples(uploaded_file: Any) -> list[QuestionSample]:
                             samples.append(parsed)
 
         else:
-            # 对 txt 做轻量兜底：
-            # 第一行作为问题，其余行作为素材。
-            lines = [line.strip() for line in text.splitlines() if line.strip()]
-            if len(lines) >= 2:
-                samples.append(
-                    QuestionSample(
-                        source_material="\n".join(lines[1:]),
-                        design_question=lines[0],
-                        teaching_guideline="请补充设计推理链路、关键步骤与可落地建议。",
-                    )
-                )
+            # 对 txt 做结构化解析：
+            # 1) 优先按 QUESTION 块分割（适配 ADEPT 标准题目格式）
+            # 2) 若无 QUESTION 标记则回退到单题模式
+            samples = _parse_structured_txt(text)
     except Exception:
         # 解析失败直接回退，避免阻断 UI 演示。
         return fallback_samples
 
     return samples if samples else fallback_samples
+
+
+def _parse_structured_txt(text: str) -> list[QuestionSample]:
+    """解析 ADEPT 标准格式的 txt 文件，按 QUESTION 块拆分为独立样本。"""
+
+    import re as _re
+
+    # 提取全局说明作为答题格式约束
+    format_hints: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "选择题" in stripped and "分" in stripped:
+            format_hints.append(stripped)
+        if "简答题" in stripped and "字" in stripped:
+            format_hints.append(stripped)
+    format_note = "；".join(format_hints) if format_hints else ""
+
+    # 按 QUESTION N 标记切分
+    question_blocks = _re.split(
+        r"(?=^-{3,}\s*\n\s*QUESTION\s+\d+)",
+        text,
+        flags=_re.MULTILINE,
+    )
+
+    samples: list[QuestionSample] = []
+    for block in question_blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        # 提取题号
+        q_match = _re.search(r"QUESTION\s+(\d+)", block)
+        if not q_match:
+            continue
+
+        q_num = q_match.group(1)
+
+        # 提取难度与对应原文
+        difficulty = ""
+        d_match = _re.search(r"\[DIFFICULTY:\s*(.+?)\]", block)
+        if d_match:
+            difficulty = d_match.group(1).strip()
+
+        source_ref = ""
+        s_match = _re.search(r"对应原文[：:](.+)", block)
+        if s_match:
+            source_ref = s_match.group(1).strip()
+
+        # 提取选择题和简答题
+        choice_q = ""
+        short_q = ""
+
+        choice_match = _re.search(
+            r"【选择题】\s*\n([\s\S]*?)(?=【简答题】|$)", block
+        )
+        if choice_match:
+            choice_q = choice_match.group(1).strip()
+
+        short_match = _re.search(
+            r"【简答题】[^\n]*\n([\s\S]*?)(?=^-{3,}|$)",
+            block,
+            flags=_re.MULTILINE,
+        )
+        if short_match:
+            short_q = short_match.group(1).strip()
+
+        if not choice_q and not short_q:
+            continue
+
+        # 组装 design_question —— 将选择题和简答题合并，明确标注题型
+        parts = [f"=== QUESTION {q_num} ({difficulty}) ==="]
+        if choice_q:
+            parts.append(f"【选择题 - 30分】\n{choice_q}")
+        if short_q:
+            parts.append(f"【简答题 - 70分】（100字以内）\n{short_q}")
+        design_question = "\n\n".join(parts)
+
+        # source_material = 对应原文描述 + 格式说明
+        source_material = f"对应原文：{source_ref}" if source_ref else f"Question {q_num}"
+        if format_note:
+            source_material += f"\n\n答题格式说明：{format_note}"
+
+        # teaching_guideline 从题目上下文推断
+        block_start_in_text = text.find(block)
+        preceding_text = text[:block_start_in_text] if block_start_in_text > 0 else ""
+        # 找到最近的 PART 标题
+        all_parts = list(_re.finditer(r"PART\s+[IVX]+:\s*(.+?)(?:\s*$|\s*=)", preceding_text, _re.MULTILINE))
+        if all_parts:
+            part_name = all_parts[-1].group(1).strip().rstrip("=").strip()
+        else:
+            part_name = "设计原理"
+        teaching_guideline = (
+            f"本题考察 {part_name} 相关理论。"
+            f"难度：{difficulty}。"
+            f"请围绕 {source_ref or part_name} 进行教学引导，"
+            "重点辅导选择题的关键概念辨析和简答题的答题框架。"
+        )
+
+        samples.append(
+            QuestionSample(
+                source_material=source_material,
+                design_question=design_question,
+                teaching_guideline=teaching_guideline,
+            )
+        )
+
+    # 若未解析出 QUESTION 块，回退到单题模式
+    if not samples:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            samples.append(
+                QuestionSample(
+                    source_material="\n".join(lines[1:]),
+                    design_question=lines[0],
+                    teaching_guideline="请补充设计推理链路、关键步骤与可落地建议。",
+                )
+            )
+
+    return samples
 
 
 # -----------------------------
@@ -1040,6 +1152,7 @@ def main() -> None:
                             api_bundle.teacher_api.teach(
                                 source_material=sample.source_material,
                                 teaching_guideline=sample.teaching_guideline,
+                                design_question=sample.design_question,
                             ),
                         )
                         teacher_knowledge = str(teacher_result.answer)

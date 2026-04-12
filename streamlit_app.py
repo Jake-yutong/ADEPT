@@ -633,6 +633,9 @@ def infer_provider_by_base_url(base_url: str) -> str:
         return "kimi"
     if "openai" in url:
         return "openai"
+    # 检测 Anthropic 协议（包括 MiniMax 等走 Anthropic 接口的平台）
+    if "/anthropic" in url or "anthropic.com" in url:
+        return "anthropic"
     return "custom"
 
 
@@ -687,8 +690,9 @@ def build_model_config_from_ui(
     elif provider_from_model != "custom":
         provider = provider_from_model
     else:
-        # 当无法自动识别 provider 时，默认回退到 OpenAI 兼容配置。
-        provider = "openai"
+        # 无法识别 provider 时，保持为通用 OpenAI 兼容模式（不强制推断为 openai）。
+        # 使用者必须显式填写 Base URL，否则后续会抛出明确错误。
+        provider = "custom"
 
     if not normalized_model:
         if not allow_empty_model_id:
@@ -702,6 +706,12 @@ def build_model_config_from_ui(
 
     if normalized_base_url:
         base_url = normalized_base_url
+    elif provider == "custom":
+        raise ValueError(
+            f"{role.title()} 使用了未知 provider（如 MiniMax、Zhipu、Baichuan 等），"
+            "必须在侧边栏填写 Base URL。\n"
+            "示例：https://api.minimax.chat/v1"
+        )
     else:
         base_url = DEFAULT_BASE_URLS.get(provider, DEFAULT_BASE_URLS["openai"])
 
@@ -787,8 +797,8 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
 
         teacher_model_id = st.text_input(
             label="Teacher Model ID",
-            value="gpt-4.1",
-            placeholder="手动输入 Teacher 模型 ID",
+            value="",
+            placeholder="例如：MiniMax-Text-01 / gpt-4.1 / deepseek-chat",
         ).strip()
         teacher_api_key = st.text_input(
             label="Teacher API Key",
@@ -796,18 +806,18 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
             placeholder="输入 Teacher API Key",
         ).strip()
         teacher_base_url = st.text_input(
-            label="Teacher Base URL（可选）",
+            label="Teacher Base URL",
             value="",
-            placeholder="例如：https://api.openai.com/v1",
-            help="留空时会按 Teacher Model ID 自动推断默认平台地址。",
+            placeholder="例如：https://api.minimax.chat/v1",
+            help="使用 DeepSeek/Qwen/Kimi/OpenAI 时可留空自动推断；使用 MiniMax 等其他平台必须填写。",
         ).strip()
 
         st.divider()
 
         student_model_id = st.text_input(
             label="Student Model ID",
-            value="gpt-4.1-mini",
-            placeholder="手动输入 Student 模型 ID",
+            value="",
+            placeholder="例如：MiniMax-Text-01 / gpt-4.1-mini / qwen-plus",
         ).strip()
         student_api_key = st.text_input(
             label="Student API Key",
@@ -815,10 +825,10 @@ def render_sidebar() -> tuple[UIConfig, Any, Any]:
             placeholder="输入 Student API Key",
         ).strip()
         student_base_url = st.text_input(
-            label="Student Base URL（可选）",
+            label="Student Base URL",
             value="",
-            placeholder="例如：https://api.deepseek.com",
-            help="可与 Teacher/Judge 使用不同平台地址。",
+            placeholder="例如：https://api.minimax.chat/v1",
+            help="使用 DeepSeek/Qwen/Kimi/OpenAI 时可留空自动推断；使用 MiniMax 等其他平台必须填写。",
         ).strip()
 
         st.divider()

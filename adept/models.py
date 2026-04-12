@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 
-ProviderName = Literal["deepseek", "qwen", "kimi", "openai", "custom"]
+ProviderName = Literal["deepseek", "qwen", "kimi", "openai", "anthropic", "custom"]
 
 
 DEFAULT_BASE_URLS: dict[str, str] = {
@@ -395,13 +395,20 @@ class OpenAICompatibleClient(LLMClient):
         }
 
         session = await self._ensure_session()
-        endpoint = f"{self.config.base_url.rstrip('/')}{self.endpoint_path}"
+        base = self.config.base_url.rstrip('/')
+        # 自动修正用户输入：移除常见误带的路径后缀
+        for suffix in ('/chat/completions', '/completions', '/messages'):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        endpoint = f"{base}{self.endpoint_path}"
 
         async with session.post(endpoint, headers=headers, json=payload) as response:
             raw_text = await response.text()
             if response.status >= 400:
                 raise LLMAPIError(
-                    f"[{self.config.provider}] 请求失败：HTTP {response.status}，响应={raw_text[:500]}"
+                    f"[{self.config.provider}] 请求失败：HTTP {response.status}，"
+                    f"请求地址={endpoint}，响应={raw_text[:400]}"
                 )
 
         try:
@@ -548,6 +555,103 @@ class OpenAIClient(OpenAICompatibleClient):
     """OpenAI 客户端。"""
 
 
+class AnthropicCompatibleClient(LLMClient):
+    """兼容 Anthropic Messages API 协议的客户端（适用于 MiniMax 等走 Anthropic 协议的平台）。"""
+
+    endpoint_path: str = "/v1/messages"
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        messages: list[dict[str, str]] = []
+        messages.append({"role": "user", "content": prompt})
+
+        payload: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "max_tokens": kwargs.pop("max_tokens", self.config.max_tokens),
+        }
+
+        # Anthropic 的 system prompt 放在顶层字段
+        if system_prompt:
+            payload["system"] = system_prompt
+
+        # temperature 为 0 时 Anthropic 不接受，需要省略或设为极小值
+        temperature = kwargs.pop("temperature", self.config.temperature)
+        if temperature > 0:
+            payload["temperature"] = temperature
+
+        payload.update(self.config.request_kwargs)
+        payload.update(kwargs)
+
+        headers = {
+            "x-api-key": self.config.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            **self.config.extra_headers,
+        }
+
+        session = await self._ensure_session()
+        base = self.config.base_url.rstrip("/")
+        # 自动修正用户误带的路径后缀
+        for suffix in ("/v1/messages", "/messages"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        endpoint = f"{base}{self.endpoint_path}"
+
+        async with session.post(endpoint, headers=headers, json=payload) as response:
+            raw_text = await response.text()
+            if response.status >= 400:
+                raise LLMAPIError(
+                    f"[{self.config.provider}] 请求失败：HTTP {response.status}，"
+                    f"请求地址={endpoint}，响应={raw_text[:400]}"
+                )
+
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise LLMAPIError(
+                f"[{self.config.provider}] 响应非 JSON，内容片段={raw_text[:200]}"
+            ) from exc
+
+        content = self._extract_content(data)
+        if not content:
+            raise LLMAPIError(
+                f"[{self.config.provider}] 响应缺少可解析文本（model={self.config.model}），"
+                f"响应片段={raw_text[:500]}"
+            )
+        return content
+
+    @staticmethod
+    def _extract_content(data: Mapping[str, Any]) -> str:
+        """解析 Anthropic Messages API 响应格式。
+
+        响应示例：
+        {"content": [{"type": "text", "text": "..."}], "role": "assistant", ...}
+        """
+        content_blocks = data.get("content")
+        if isinstance(content_blocks, list):
+            text_parts: list[str] = []
+            for block in content_blocks:
+                if isinstance(block, Mapping) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        text_parts.append(text.strip())
+            if text_parts:
+                return "\n".join(text_parts)
+
+        # 兼容直接返回 text 字段的情况
+        if isinstance(data.get("text"), str) and data["text"].strip():
+            return data["text"].strip()
+
+        return ""
+
+
 class LLMClientFactory:
     """按 provider 动态构建具体 LLM 客户端。"""
 
@@ -556,6 +660,7 @@ class LLMClientFactory:
         "qwen": QwenClient,
         "kimi": KimiClient,
         "openai": OpenAIClient,
+        "anthropic": AnthropicCompatibleClient,
         "custom": OpenAICompatibleClient,
     }
 
